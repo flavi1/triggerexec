@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import sys
 import os
 import glob
+import re
 import subprocess
 import pygame
 
 CONFIG_DIR = "/etc/triggerexec.d"
 VERBOSE = "-v" in sys.argv or "--verbose" in sys.argv
+ANALOG_THRESHOLD = 0.7  # Seuil de déclenchement pour les sticks et gâchettes
 
 def load_configs_from_dir(dir_path):
     """Charge et parse tous les fichiers de configuration du dossier triggerexec.d."""
@@ -34,13 +37,23 @@ def load_configs_from_dir(dir_path):
                     continue
                 
                 if "=" in line:
-                    key, val = map(str.strip, line.split("=", 1))
+                    key_part, val = map(str.strip, line.split("=", 1))
                     
-                    if key.upper() == "DEVICE" and current_app is None and not global_rules:
+                    if key_part.upper() == "DEVICE" and current_app is None and not global_rules:
                         device_filter = val
                         continue
                     
-                    combo = "".join(sorted([k.strip().upper() for k in key.split("+")]))
+                    raw_tokens = key_part.split("+")
+                    cleaned_tokens = []
+                    for token in raw_tokens:
+                        token = token.strip().upper()
+                        # Si le token est un axe, un hat ou un bouton sans opérateur explicite, on ajoute "=1" par défaut
+                        if ("AXIS" in token or "HAT" in token or "BTN" in token) and "=" not in token:
+                            token = f"{token}=1"
+                        cleaned_tokens.append(token)
+                    
+                    # Tri alphabétique pour garantir l'invariabilité de l'ordre des combinaisons
+                    combo = "".join(sorted(cleaned_tokens))
                     
                     if current_app is None:
                         global_rules[combo] = val
@@ -95,7 +108,6 @@ def resolve_and_execute(active_keys, matched_configs):
             return
 
 def main():
-    # Initialisation minimale de SDL pour le sous-système Joystick (sans ouvrir de fenêtre vidéo)
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     pygame.joystick.init()
@@ -106,7 +118,6 @@ def main():
     joysticks = {}
     active_keys = set()
 
-    # Enregistrement initial des manettes connectées
     for i in range(pygame.joystick.get_count()):
         joy = pygame.joystick.Joystick(i)
         joy.init()
@@ -129,35 +140,30 @@ def main():
                     del joysticks[event.instance_id]
 
             elif event.type == pygame.JOYBUTTONDOWN:
-                key_name = f"BTN_{event.button}"
+                key_name = f"BTN_{event.button}=1"
                 if VERBOSE:
-                    print(f"[INPUT] -> {key_name} = 1")
+                    print(f"[INPUT] -> {key_name}")
                 active_keys.add(key_name)
                 
-                # Filtrage des configurations selon le nom de la manette active
                 joy_name = pygame.joystick.Joystick(event.joy).get_name()
                 matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
                 resolve_and_execute(active_keys, matched_configs)
 
             elif event.type == pygame.JOYBUTTONUP:
-                key_name = f"BTN_{event.button}"
+                key_name = f"BTN_{event.button}=1"
                 if VERBOSE:
-                    print(f"[INPUT] -> {key_name} = 0")
+                    print(f"[INPUT] -> {key_name} (Relâché)")
                 active_keys.discard(key_name)
 
             elif event.type == pygame.JOYHATMOTION:
-                # event.value renvoie un tuple (x, y) ex: (0, 1) Haut, (0, -1) Bas, (-1, 0) Gauche, (1, 0) Droite
                 hat_x, hat_y = event.value
-                
-                # Gestion propre sous forme de clés virtuelles unifiées
                 hat_keys = {
-                    "ABS_HAT0X=-1": hat_x < 0,
-                    "ABS_HAT0X=1":  hat_x > 0,
-                    "ABS_HAT0Y=-1": hat_y < 0, # Bas ou Haut selon SDL, on aligne avec vos conventions
-                    "ABS_HAT0Y=1":  hat_y > 0
+                    f"ABS_HAT{event.hat}X=-1": hat_x < 0,
+                    f"ABS_HAT{event.hat}X=1":  hat_x > 0,
+                    f"ABS_HAT{event.hat}Y=-1": hat_y < 0,
+                    f"ABS_HAT{event.hat}Y=1":  hat_y > 0
                 }
                 
-                # Adaptation basique pour mapper les états du Hat
                 for hkey, pressed in hat_keys.items():
                     if pressed:
                         if hkey not in active_keys:
@@ -169,6 +175,36 @@ def main():
                             resolve_and_execute(active_keys, matched_configs)
                     else:
                         active_keys.discard(hkey)
+
+            elif event.type == pygame.JOYAXISMOTION:
+                val = event.value
+                axis_pos_key = f"AXIS_{event.axis}=1"
+                axis_neg_key = f"AXIS_{event.axis}=-1"
+                
+                pos_pressed = val > ANALOG_THRESHOLD
+                neg_pressed = val < -ANALOG_THRESHOLD
+                
+                if pos_pressed:
+                    if axis_pos_key not in active_keys:
+                        active_keys.add(axis_pos_key)
+                        if VERBOSE:
+                            print(f"[INPUT] -> {axis_pos_key} (val: {val:.2f})")
+                        joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                        matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                        resolve_and_execute(active_keys, matched_configs)
+                else:
+                    active_keys.discard(axis_pos_key)
+                
+                if neg_pressed:
+                    if axis_neg_key not in active_keys:
+                        active_keys.add(axis_neg_key)
+                        if VERBOSE:
+                            print(f"[INPUT] -> {axis_neg_key} (val: {val:.2f})")
+                        joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                        matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                        resolve_and_execute(active_keys, matched_configs)
+                else:
+                    active_keys.discard(axis_neg_key)
 
         clock.tick(100)
 

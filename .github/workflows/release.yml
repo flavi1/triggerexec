@@ -1,0 +1,42 @@
+name: Auto Release DEB
+
+on:
+  push:
+    branches:
+      - main  # Se déclenche dès que vous poussez sur main
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # Nécessaire pour créer des releases et des tags
+
+    steps:
+    - name: Checkout du code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Important pour que git rev-list compte tous les commits
+
+    - name: Rendre le script de build exécutable
+      run: chmod +x build-deb.sh
+
+    - name: Exécuter la construction du paquet .deb
+      run: ./build-deb.sh
+
+    - name: Récupérer la version générée pour le nom de la release
+      id: get_version
+      run: |
+        VERSION=$(dpkg-deb -f triggerexec_*.deb Version)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Tag automatique : v$VERSION"
+
+    - name: Créer un tag Git automatique et une Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ steps.get_version.outputs.version }}
+        name: Release v${{ steps.get_version.outputs.version }}
+        files: "*.deb"
+        body: "Mise à jour automatique du paquet triggerexec."
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

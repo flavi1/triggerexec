@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+import asyncio
+import glob
+import os
+import re
+import subprocess
+from evdev import InputDevice, ecodes, list_devices
+
+# --- PARAMÈTRES GLOBAUX ---
+CONFIG_DIR = "/etc/triggerexec.d"
+ANALOG_THRESHOLD_HIGH = 600  # Seuil haut pour déclencher un axe analogique (stick/trigger)
+ANALOG_THRESHOLD_LOW = 200   # Seuil bas pour le relâchement de l'axe
+
+# États globaux pour le suivi des touches et des axes par périphérique
+device_active_keys = {}
+device_axis_states = {}
+
+
+def load_configs_from_dir(dir_path):
+    """Charge et parse tous les fichiers de configuration du dossier triggerexec.d."""
+    device_rules = []
+    
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+        return device_rules
+
+    pattern = os.path.join(dir_path, "*.conf")
+    for filepath in glob.glob(pattern):
+        device_filter = None
+        global_rules = {}
+        app_rules = {}
+        current_app = None
+        
+        with open(filepath, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                
+                # Détection d'une section applicative [NomDeLaClasse]
+                if line.startswith("[") and line.endswith("]"):
+                    current_app = line[1:-1].strip()
+                    app_rules[current_app] = {}
+                    continue
+                
+                if "=" in line:
+                    parts = line.split("=", 1)
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    
+                    # Gestion du paramètre DEVICE = ... en haut de fichier
+                    if key.upper() == "DEVICE" and current_app is None and not global_rules:
+                        device_filter = val
+                        continue
+                    
+                    # Normalisation stricte de la combinaison (tri alphabétique pour s'affranchir de l'ordre)
+                    combo = "".join(sorted([k.strip().upper() for k in key.split("+")]))
+                    
+                    if current_app is None:
+                        global_rules[combo] = val
+                    else:
+                        app_rules[current_app][combo] = val
+                        
+        device_rules.append({
+            "file": os.path.basename(filepath),
+            "filter": device_filter,
+            "globals": global_rules,
+            "apps": app_rules
+        })
+        
+    return device_rules
+
+
+def get_active_window_class():
+    """Interroge KWin via kdotool pour obtenir la classe de la fenêtre active."""
+    try:
+        result = subprocess.run(
+            ["kdotool", "getwindowclassname", "$(kdotool getactivewindow)"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def execute_command(cmd):
+    """Exécute la commande shell configurée."""
+    print(f"[EXEC] {cmd}")
+    subprocess.Popen(cmd, shell=True)
+
+
+def resolve_and_execute(dev_path, matched_configs):
+    """Résout la combinaison active en fonction de la fenêtre courante et exécute l'action."""
+    active_keys = device_active_keys.get(dev_path, set())
+    if not active_keys:
+        return
+    
+    combo_str = "".join(sorted(list(active_keys)))
+    win_class = get_active_window_class()
+    
+    # 1. Priorité aux règles spécifiques des applications actives dans les profils liés
+    for cfg in matched_configs:
+        for app_name, rules in cfg["apps"].items():
+            if app_name.lower() in win_class.lower() and combo_str in rules:
+                execute_command(rules[combo_str])
+                return
+
+    # 2. Repli sur les règles globales (orphelines en haut de fichier)
+    for cfg in matched_configs:
+        if combo_str in cfg["globals"]:
+            execute_command(cfg["globals"][combo_str])
+            return
+
+
+async def handle_device(dev, matched_configs):
+    """Boucle asynchrone d'écoute pour un périphérique d'entrée donné."""
+    dev_path = dev.path
+    device_active_keys[dev_path] = set()
+    device_axis_states[dev_path] = {}
+
+    print(f"Écoute active sur : {dev.name} ({dev_path})")
+    
+    try:
+        async for event in dev.async_read_loop():
+            # Gestion des touches clavier / boutons manette / télécommande
+            if event.type == ecodes.EV_KEY:
+                key_name = ecodes.KEY[event.code] if event.code in ecodes.KEY else f"BTN_{event.code}"
+                if isinstance(key_name, list):
+                    key_name = key_name[0]
+                
+                if event.value == 1:  # Appui (Down)
+                    device_active_keys[dev_path].add(key_name)
+                    resolve_and_execute(dev_path, matched_configs)
+                elif event.value == 0:  # Relâchement (Up)
+                    device_active_keys[dev_path].discard(key_name)
+
+            # Gestion des axes analogiques (Sticks / Triggers transformés en boutons)
+            elif event.type == ecodes.EV_ABS:
+                axis_name = ecodes.ABS[event.code] if event.code in ecodes.ABS else f"ABS_{event.code}"
+                val = event.value
+                
+                axis_key_pos = f"{axis_name}=1"
+                axis_key_neg = f"{axis_name}=-1"
+                states = device_axis_states[dev_path]
+                
+                if val > ANALOG_THRESHOLD_HIGH:
+                    if not states.get(axis_key_pos, False):
+                        states[axis_key_pos] = True
+                        device_active_keys[dev_path].add(axis_key_pos)
+                        resolve_and_execute(dev_path, matched_configs)
+                elif val < -ANALOG_THRESHOLD_HIGH:
+                    if not states.get(axis_key_neg, False):
+                        states[axis_key_neg] = True
+                        device_active_keys[dev_path].add(axis_key_neg)
+                        resolve_and_execute(dev_path, matched_configs)
+                else:
+                    # Retour à la zone neutre -> relâchement des axes virtuels
+                    if val < ANALOG_THRESHOLD_LOW and val > -ANALOG_THRESHOLD_LOW:
+                        if states.get(axis_key_pos, False):
+                            states[axis_key_pos] = False
+                            device_active_keys[dev_path].discard(axis_key_pos)
+                        if states.get(axis_key_neg, False):
+                            states[axis_key_neg] = False
+                            device_active_keys[dev_path].discard(axis_key_neg)
+
+    except OSError:
+        print(f"Périphérique débranché : {dev.name} ({dev_path})")
+    finally:
+        device_active_keys.pop(dev_path, None)
+        device_axis_states.pop(dev_path, None)
+
+
+async def main():
+    configs = load_configs_from_dir(CONFIG_DIR)
+    print(f"Chargement de {len(configs)} fichier(s) de configuration depuis {CONFIG_DIR}.")
+
+    # Récupération des devices connectés
+    try:
+        devices = [InputDevice(path) for path in list_devices()]
+    except Exception as e:
+        print(f"Erreur lors de l'accès aux inputs (Vérifiez les droits du groupe input) : {e}")
+        return
+
+    tasks = []
+    for dev in devices:
+        dev_name = dev.name
+        matched_configs = []
+        
+        # Filtrage par fichier selon l'en-tête DEVICE = ...
+        for cfg in configs:
+            if cfg["filter"] is None or re.search(cfg["filter"], dev_name, re.IGNORECASE):
+                matched_configs.append(cfg)
+        
+        if matched_configs:
+            tasks.append(handle_device(dev, matched_configs))
+
+    if not tasks:
+        print("Aucun périphérique ne correspond aux filtres configurés.")
+        return
+
+    await asyncio.gather(*tasks)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nArrêt de triggerexec.")

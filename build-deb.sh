@@ -28,7 +28,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Maintainer: flavi1 <votre.email@domain.com>
-Depends: python3, python3-evdev, kdotool
+Depends: python3, python3-evdev
 Description: Démon d'interception d'événements input avec gestion par fenêtre active.
  Intercepte /dev/input/event*, gère les combinaisons de touches et exécute
  des commandes shell selon la classe de la fenêtre active.

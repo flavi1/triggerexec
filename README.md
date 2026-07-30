@@ -6,7 +6,7 @@
 
 Le démon nécessite l'installation de la bibliothèque Python `evdev` et les droits d'accès aux périphériques d'entrée :
 
-sudo apt install python3-evdev
+sudo apt install python3-pygame
 sudo usermod -aG input $USER
 
 *(Remarque : Vous devez vous déconnecter/reconnecter pour que le groupe `input` soit pris en compte).*

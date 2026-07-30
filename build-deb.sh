@@ -1,4 +1,6 @@
 #!/bin/bash
+# build-deb.sh
+
 set -e
 
 PACKAGE_NAME="triggerexec"
@@ -20,7 +22,7 @@ mkdir -p "$BUILD_DIR/etc/triggerexec.d"
 cp -av triggerexec "$BUILD_DIR/usr/local/bin/"
 chmod +x "$BUILD_DIR/usr/local/bin/triggerexec"
 
-# 3. Génération dynamique du fichier control avec la bonne version
+# 3. Génération dynamique du fichier control avec la bonne version et dépendance Pygame
 cat << EOF > "$BUILD_DIR/DEBIAN/control"
 Package: triggerexec
 Version: $VERSION
@@ -28,10 +30,10 @@ Section: utils
 Priority: optional
 Architecture: all
 Maintainer: flavi1 <votre.email@domain.com>
-Depends: python3, python3-evdev
-Description: Démon d'interception d'événements input avec gestion par fenêtre active.
- Intercepte /dev/input/event*, gère les combinaisons de touches et exécute
- des commandes shell selon la classe de la fenêtre active.
+Depends: python3, python3-pygame
+Description: Démon d'interception de manettes via SDL avec gestion par fenêtre active.
+ Intercepte les événements de joystick/gamepad, gère les combinaisons de touches
+ et exécute des commandes shell selon la classe de la fenêtre active.
 EOF
 
 # 4. Script postinst

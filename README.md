@@ -15,7 +15,10 @@ sudo usermod -aG input $USER
 
 Vous pouvez installer automatiquement la dernière version du paquet `.deb` directement depuis les releases GitHub en une seule commande :
 
-sudo apt install ./$(curl -s [https://api.github.com/repos/flavi1/triggerexec/releases/latest](https://www.google.com/search?q=https://api.github.com/repos/flavi1/triggerexec/releases/latest) | grep "browser_download_url.*deb" | cut -d '"' -f 4)
+```bash
+sudo apt install ./$(curl -s [https://api.github.com/repos/flavi1/triggerexec/releases/latest](https://api.github.com/repos/flavi1/triggerexec/releases/latest) | grep "browser_download_url.*deb" | cut -d '"' -f 4)
+
+```
 
 ## Configuration
 

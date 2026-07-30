@@ -90,22 +90,98 @@ def load_configs_from_dir(dir_path):
         
     return device_rules
     
-def get_active_window_class():
+def get_active_session_info():
+    """Retourne un tuple (uid, username) de l'utilisateur actif sur la session graphique."""
     try:
+        # Liste toutes les sessions existantes
+        sessions_out = subprocess.check_output(["loginctl", "list-sessions", "--no-legend"], text=True)
+        
+        for line in sessions_out.strip().split("\n"):
+            if not line: continue
+            parts = line.split()
+            session_id, uid, user = parts[0], parts[1], parts[2]
+            
+            # Récupère les propriétés de cette session
+            props_raw = subprocess.check_output(["loginctl", "show-session", session_id], text=True)
+            props = dict(p.split("=", 1) for p in props_raw.strip().split("\n") if "=" in p)
+            
+            # On cherche LA session active et graphique (wayland ou x11)
+            if props.get("State") == "active" and props.get("Type") in ["wayland", "x11"]:
+                return uid, user
+                
+    except Exception as e:
+        if VERBOSE:
+            print(f"[DEBUG] Erreur lors de la détection de session : {e}")
+            
+    return None, None
+    
+def get_active_window_class():
+    uid, user = get_active_session_info()
+    
+    if not uid or not user:
+        if VERBOSE:
+            print("[DEBUG-KDO] Aucune session graphique active trouvée.")
+        return ""
+
+    try:
+        # Détection dynamique du socket Wayland
+        wayland_displays = glob.glob(f"/run/user/{uid}/wayland-*")
+        wayland_socket = "wayland-0"
+        if wayland_displays:
+            valid_sockets = [s for s in wayland_displays if not s.endswith('.lock')]
+            if valid_sockets:
+                wayland_socket = os.path.basename(valid_sockets[0])
+        
+        dbus_address = f"unix:path=/run/user/{uid}/bus"
+        xdg_runtime_dir = f"/run/user/{uid}"
+
+        if VERBOSE:
+            print(f"[DEBUG-KDO] Exécution pour l'utilisateur: {user} | WAYLAND_DISPLAY: {wayland_socket}")
+
+        # Astuce : On utilise la commande 'env' exécutée par sudo pour 
+        # forcer les variables d'environnement malgré le nettoyage de sudo
+        base_cmd = [
+            "sudo", "-u", user,
+            "env",
+            f"XDG_RUNTIME_DIR={xdg_runtime_dir}",
+            f"DISPLAY=:0",
+            f"WAYLAND_DISPLAY={wayland_socket}",
+            f"DBUS_SESSION_BUS_ADDRESS={dbus_address}"
+        ]
+
+        # Première exécution : récupérer l'ID
         res_win = subprocess.run(
-            ["kdotool", "getactivewindow"],
+            base_cmd + ["kdotool", "getactivewindow"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         win_id = res_win.stdout.strip()
-        if not win_id:
-            return ""
         
+        # Affichage de l'erreur s'il y en a une
+        if VERBOSE and res_win.stderr:
+            print(f"[DEBUG-KDO] Erreur kdotool (getactivewindow) : {res_win.stderr.strip()}")
+        
+        if not win_id:
+            if VERBOSE:
+                print("[DEBUG-KDO] Aucun ID de fenêtre retourné.")
+            return ""
+            
+        if VERBOSE:
+            print(f"[DEBUG-KDO] ID de la fenêtre : {win_id}")
+            
+        # Deuxième exécution : récupérer la classe (nom de l'app)
         result = subprocess.run(
-            ["kdotool", "getwindowclassname", win_id],
+            base_cmd + ["kdotool", "getwindowclassname", win_id],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
+        
+        if VERBOSE and result.stderr:
+            print(f"[DEBUG-KDO] Erreur kdotool (getwindowclassname) : {result.stderr.strip()}")
+            
         return result.stdout.strip()
-    except Exception:
+        
+    except Exception as e:
+        if VERBOSE:
+            print(f"[DEBUG-KDO] Exception fatale : {e}")
         return ""
 
 def execute_command(cmd, combo_str=""):

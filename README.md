@@ -44,9 +44,6 @@ BTN_PAUSE = kdotool windowclose $(kdotool getactivewindow)
 
 ```
 
-[org.libretro.RetroArch]
-BTN_SOUTH = ydotool key 28:1 28:0
-BTN_PAUSE = kdotool windowclose $(kdotool getactivewindow)
 
 ## Utilisation
 

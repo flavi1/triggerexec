@@ -11,22 +11,20 @@ CONFIG_DIR = "/etc/triggerexec.d"
 VERBOSE = "-v" in sys.argv or "--verbose" in sys.argv
 ANALOG_THRESHOLD = 0.7
 
-# Dictionnaire de correspondance des boutons par nom de manette reconnu par SDL
 JOYSTICK_MAPPINGS = {
     "Xbox 360 Controller": {
-        "BTN_A": "BTN_0=1",      # Bouton A
-        "BTN_B": "BTN_1=1",      # Bouton B
-        "BTN_X": "BTN_2=1",      # Bouton X
-        "BTN_Y": "BTN_3=1",      # Bouton Y
-        "BTN_TL": "BTN_4=1",     # LB (Gauche)
-        "BTN_TR": "BTN_5=1",     # RB (Droite)
-        "BTN_SELECT": "BTN_6=1", # Back / Select
-        "BTN_START": "BTN_7=1",  # Start
-        "BTN_MODE": "BTN_8=1",   # Guide / Xbox
+        "BTN_A": "BTN_0=1",
+        "BTN_B": "BTN_1=1",
+        "BTN_X": "BTN_2=1",
+        "BTN_Y": "BTN_3=1",
+        "BTN_TL": "BTN_4=1",
+        "BTN_TR": "BTN_5=1",
+        "BTN_SELECT": "BTN_6=1",
+        "BTN_START": "BTN_7=1",
+        "BTN_MODE": "BTN_8=1",
     },
 }
 
-# Mémorise la liste exacte des boutons qui ont été enfoncés ensemble lors de la session
 current_combo_snapshot = set()
 
 def load_configs_from_dir(dir_path):
@@ -97,7 +95,6 @@ def load_configs_from_dir(dir_path):
     return device_rules
     
 def get_active_session_info():
-    """Retourne un tuple (uid, username) de l'utilisateur actif sur la session graphique."""
     try:
         sessions_out = subprocess.check_output(["loginctl", "list-sessions", "--no-legend"], text=True)
         
@@ -190,7 +187,8 @@ def execute_command(cmd, combo_str=""):
 
 def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
     if not keys_to_evaluate:
-        print("[DEBUG] resolve_and_execute: keys_to_evaluate est vide.")
+        if VERBOSE:
+            print("[DEBUG] resolve_and_execute: keys_to_evaluate est vide.")
         return
     
     sorted_tokens = sorted(list(keys_to_evaluate))
@@ -198,53 +196,61 @@ def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
     
     win_class = get_active_window_class()
     
-    print(f"[DEBUG-TRACE] === DÉBUT RÉSOLUTION ===")
-    print(f"[DEBUG-TRACE] Combo finale cherchée: '{combo_str}'")
-    print(f"[DEBUG-TRACE] Fenêtre active détectée: '{win_class}'")
-    print(f"[DEBUG-TRACE] Nombre de configs correspondantes: {len(matched_configs)}")
+    if VERBOSE:
+        print(f"[DEBUG-TRACE] === DÉBUT RÉSOLUTION ===")
+        print(f"[DEBUG-TRACE] Combo finale cherchée: '{combo_str}'")
+        print(f"[DEBUG-TRACE] Fenêtre active détectée: '{win_class}'")
+        print(f"[DEBUG-TRACE] Nombre de configs correspondantes: {len(matched_configs)}")
 
-    # Vérification de la blacklist pour chaque config correspondante
+    # 1. Priorité absolue aux règles spécifiques des applications actives (même en cas de blacklist globale)
+    for idx, cfg in enumerate(matched_configs):
+        if VERBOSE:
+            print(f"[DEBUG-TRACE] --- Config #{idx} ({cfg['file']}) [Test Apps] ---")
+        for app_name, rules in cfg["apps"].items():
+            if app_name.lower() in win_class.lower():
+                if VERBOSE:
+                    print(f"[DEBUG-TRACE] -> Application correspondante trouvée: '{app_name}'")
+                if combo_str in rules:
+                    if VERBOSE:
+                        print(f"[DEBUG-TRACE] -> Trouvé dans les règles spécifiques de l'app (combo exacte) !")
+                    execute_command(rules[combo_str], combo_str)
+                    return
+                if len(sorted_tokens) == 1 and sorted_tokens[0] in rules:
+                    if VERBOSE:
+                        print(f"[DEBUG-TRACE] -> Trouvé dans les règles spécifiques de l'app (token unique) !")
+                    execute_command(rules[sorted_tokens[0]], sorted_tokens[0])
+                    return
+
+    # 2. Vérification de la blacklist globale pour bloquer uniquement les règles globales
     for cfg in matched_configs:
         if cfg.get("blacklist"):
             blacklisted_patterns = cfg["blacklist"].split()
             for pattern in blacklisted_patterns:
                 if re.search(pattern, win_class, re.IGNORECASE):
-                    print(f"[DEBUG-TRACE] -> Fenêtre '{win_class}' ignorée (correspond à la blacklist '{pattern}' dans {cfg['file']}).")
+                    if VERBOSE:
+                        print(f"[DEBUG-TRACE] -> Fenêtre '{win_class}' blackant les règles globales (correspond à '{pattern}' dans {cfg['file']}).")
+                        print(f"[DEBUG-TRACE] === FIN RÉSOLUTION (Règles globales ignorées par blacklist) ===")
                     return
 
-    # 1. Priorité aux règles spécifiques des applications actives
+    # 3. Repli sur les règles globales si non blacklisté
+    if VERBOSE:
+        print(f"[DEBUG-TRACE] Passage aux règles globales...")
     for idx, cfg in enumerate(matched_configs):
-        print(f"[DEBUG-TRACE] --- Config #{idx} ({cfg['file']}) --- Applications enregistrées: {list(cfg['apps'].keys())}")
-        for app_name, rules in cfg["apps"].items():
-            print(f"[DEBUG-TRACE] Test correspondance app: '{app_name}' dans '{win_class}' ?")
-            if app_name.lower() in win_class.lower():
-                print(f"[DEBUG-TRACE] -> Application trouvée ! Règles dispo pour cette app: {list(rules.keys())}")
-                if combo_str in rules:
-                    print(f"[DEBUG-TRACE] -> Trouvé dans les règles de l'app (combo exacte) !")
-                    execute_command(rules[combo_str], combo_str)
-                    return
-                if len(sorted_tokens) == 1 and sorted_tokens[0] in rules:
-                    print(f"[DEBUG-TRACE] -> Trouvé dans les règles de l'app (token unique) !")
-                    execute_command(rules[sorted_tokens[0]], sorted_tokens[0])
-                    return
-                print(f"[DEBUG-TRACE] -> Clé non trouvée dans les règles de cette application.")
-
-    # 2. Repli sur les règles globales
-    print(f"[DEBUG-TRACE] Passage aux règles globales...")
-    for idx, cfg in enumerate(matched_configs):
-        print(f"[DEBUG-TRACE] --- Globaux Config #{idx} ({cfg['file']}) --- Règles dispos: {list(cfg['globals'].keys())}")
+        if VERBOSE:
+            print(f"[DEBUG-TRACE] --- Globaux Config #{idx} ({cfg['file']}) ---")
         if combo_str in cfg["globals"]:
-            print(f"[DEBUG-TRACE] -> Trouvé dans les globals (combo exacte) !")
+            if VERBOSE:
+                print(f"[DEBUG-TRACE] -> Trouvé dans les globals (combo exacte) !")
             execute_command(cfg["globals"][combo_str], combo_str)
             return
         elif len(sorted_tokens) == 1 and sorted_tokens[0] in cfg["globals"]:
-            print(f"[DEBUG-TRACE] -> Trouvé dans les globals (token unique) !")
+            if VERBOSE:
+                print(f"[DEBUG-TRACE] -> Trouvé dans les globals (token unique) !")
             execute_command(cfg["globals"][sorted_tokens[0]], sorted_tokens[0])
             return
-        else:
-            print(f"[DEBUG-TRACE] -> '{combo_str}' ABSENT des globals de ce fichier.")
 
-    print(f"[DEBUG-TRACE] === FIN RÉSOLUTION : AUCUNE RÈGLE CORRESPONDANTE TROUVÉE ===")
+    if VERBOSE:
+        print(f"[DEBUG-TRACE] === FIN RÉSOLUTION : AUCUNE RÈGLE CORRESPONDANTE TROUVÉE ===")
 
 def main():
     global current_combo_snapshot
@@ -273,7 +279,6 @@ def main():
     clock = pygame.time.Clock()
 
     def handle_release_event(joy_id):
-        """Factorisation de la logique de déclenchement au relâchement complet des entrées."""
         nonlocal active_keys
         if not active_keys and current_combo_snapshot:
             try:
@@ -336,7 +341,6 @@ def main():
                             handle_release_event(event.joy)
 
             elif event.type == pygame.JOYAXISMOTION:
-                # Les gâchettes/axes ne doivent pas impacter le cycle des combinaisons (snapshot)
                 val = event.value
                 axis_pos_key = f"AXIS_{event.axis}=1"
                 axis_neg_key = f"AXIS_{event.axis}=-1"

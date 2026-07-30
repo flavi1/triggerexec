@@ -16,7 +16,7 @@ sudo usermod -aG input $USER
 Vous pouvez installer automatiquement la dernière version du paquet `.deb` directement depuis les releases GitHub en une seule commande :
 
 ```bash
-curl -s https://api.github.com/repos/flavi1/triggerexec/releases/latest | grep "browser_download_url.deb" | cut -d '"' -f 4 | wget -qi -
+wget -O triggerexec.deb $(curl -s https://api.github.com/repos/flavi1/triggerexec/releases/latest | grep "browser_download_url" | cut -d '"' -f 4)
 sudo apt install ./triggerexec.deb
 
 ```

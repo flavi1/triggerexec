@@ -38,6 +38,7 @@ def load_configs_from_dir(dir_path):
     pattern = os.path.join(dir_path, "*.conf")
     for filepath in glob.glob(pattern):
         device_filter = None
+        blacklist_filter = None
         global_rules = {}
         app_rules = {}
         current_app = None
@@ -63,6 +64,10 @@ def load_configs_from_dir(dir_path):
                     device_filter = val
                     continue
                 
+                if key_part.upper() == "BLACKLIST" and current_app is None:
+                    blacklist_filter = val
+                    continue
+                
                 raw_tokens = key_part.split("+")
                 cleaned_tokens = []
                 for token in raw_tokens:
@@ -84,6 +89,7 @@ def load_configs_from_dir(dir_path):
         device_rules.append({
             "file": os.path.basename(filepath),
             "filter": device_filter,
+            "blacklist": blacklist_filter,
             "globals": global_rules,
             "apps": app_rules
         })
@@ -196,6 +202,15 @@ def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
     print(f"[DEBUG-TRACE] Combo finale cherchée: '{combo_str}'")
     print(f"[DEBUG-TRACE] Fenêtre active détectée: '{win_class}'")
     print(f"[DEBUG-TRACE] Nombre de configs correspondantes: {len(matched_configs)}")
+
+    # Vérification de la blacklist pour chaque config correspondante
+    for cfg in matched_configs:
+        if cfg.get("blacklist"):
+            blacklisted_patterns = cfg["blacklist"].split()
+            for pattern in blacklisted_patterns:
+                if re.search(pattern, win_class, re.IGNORECASE):
+                    print(f"[DEBUG-TRACE] -> Fenêtre '{win_class}' ignorée (correspond à la blacklist '{pattern}' dans {cfg['file']}).")
+                    return
 
     # 1. Priorité aux règles spécifiques des applications actives
     for idx, cfg in enumerate(matched_configs):
@@ -321,6 +336,7 @@ def main():
                             handle_release_event(event.joy)
 
             elif event.type == pygame.JOYAXISMOTION:
+                # Les gâchettes/axes ne doivent pas impacter le cycle des combinaisons (snapshot)
                 val = event.value
                 axis_pos_key = f"AXIS_{event.axis}=1"
                 axis_neg_key = f"AXIS_{event.axis}=-1"
@@ -331,7 +347,6 @@ def main():
                 if pos_pressed:
                     if axis_pos_key not in active_keys:
                         active_keys.add(axis_pos_key)
-                        current_combo_snapshot.add(axis_pos_key)
                         if VERBOSE:
                             print(f"[INPUT] -> {axis_pos_key} (Enfoncé, val: {val:.2f})")
                 else:
@@ -339,12 +354,10 @@ def main():
                         if VERBOSE:
                             print(f"[INPUT] -> {axis_pos_key} (Relâché)")
                         active_keys.discard(axis_pos_key)
-                        handle_release_event(event.joy)
                 
                 if neg_pressed:
                     if axis_neg_key not in active_keys:
                         active_keys.add(axis_neg_key)
-                        current_combo_snapshot.add(axis_neg_key)
                         if VERBOSE:
                             print(f"[INPUT] -> {axis_neg_key} (Enfoncé, val: {val:.2f})")
                 else:
@@ -352,7 +365,6 @@ def main():
                         if VERBOSE:
                             print(f"[INPUT] -> {axis_neg_key} (Relâché)")
                         active_keys.discard(axis_neg_key)
-                        handle_release_event(event.joy)
 
         clock.tick(100)
 

@@ -11,6 +11,21 @@ CONFIG_DIR = "/etc/triggerexec.d"
 VERBOSE = "-v" in sys.argv or "--verbose" in sys.argv
 ANALOG_THRESHOLD = 0.7
 
+# Dictionnaire de correspondance des boutons par nom de manette reconnu par SDL
+JOYSTICK_MAPPINGS = {
+    "Xbox 360 Controller": {
+        "BTN_A": "BTN_0=1",      # Bouton A
+        "BTN_B": "BTN_1=1",      # Bouton B
+        "BTN_X": "BTN_2=1",      # Bouton X
+        "BTN_Y": "BTN_3=1",      # Bouton Y
+        "BTN_TL": "BTN_4=1",     # LB (Gauche)
+        "BTN_TR": "BTN_5=1",     # RB (Droite)
+        "BTN_SELECT": "BTN_6=1", # Back / Select
+        "BTN_START": "BTN_7=1",  # Start
+        "BTN_MODE": "BTN_8=1",   # Guide / Xbox
+    },
+}
+
 # Mémorise la liste exacte des boutons qui ont été enfoncés ensemble lors de la session
 current_combo_snapshot = set()
 
@@ -39,34 +54,33 @@ def load_configs_from_dir(dir_path):
                     continue
                 
                 if "=" in line:
-                    match = re.match(r'^([^=]+(?:=[+-]?\d+)?(?:\s*\+\s*[^=]+(?:=[+-]?\d+)?)*)\s*=\s*(.*)$', line)
-                    if not match:
-                        parts = line.split("=", 1)
-                        key_part, val = parts[0].strip(), parts[1].strip()
-                    else:
-                        key_part, val = match.groups()
-                        key_part = key_part.strip()
-                        val = val.strip()
+                    parts = line.split("=", 1)
+                    key_part, val = parts[0].strip(), parts[1].strip()
+                else:
+                    continue
+                
+                if key_part.upper() == "DEVICE" and current_app is None:
+                    device_filter = val
+                    continue
+                
+                raw_tokens = key_part.split("+")
+                cleaned_tokens = []
+                for token in raw_tokens:
+                    token = token.strip()
+                    resolved = token
+                    for joy_name_pat, mapping in JOYSTICK_MAPPINGS.items():
+                        if token in mapping:
+                            resolved = mapping[token]
+                            break
+                    cleaned_tokens.append(resolved)
+                
+                combo = "+".join(sorted(cleaned_tokens))
+                
+                if current_app is None:
+                    global_rules[combo] = val
+                else:
+                    app_rules[current_app][combo] = val
                     
-                    if key_part.upper() == "DEVICE" and current_app is None:
-                        device_filter = val
-                        continue
-                    
-                    raw_tokens = key_part.split("+")
-                    cleaned_tokens = []
-                    for token in raw_tokens:
-                        token = token.strip().upper()
-                        if "=" not in token:
-                            token = f"{token}=1"
-                        cleaned_tokens.append(token)
-                    
-                    combo = "+".join(sorted(cleaned_tokens))
-                    
-                    if current_app is None:
-                        global_rules[combo] = val
-                    else:
-                        app_rules[current_app][combo] = val
-                        
         device_rules.append({
             "file": os.path.basename(filepath),
             "filter": device_filter,
@@ -101,38 +115,54 @@ def execute_command(cmd, combo_str=""):
         print(f"[EXEC] {cmd}")
     subprocess.Popen(cmd, shell=True)
 
-def resolve_and_execute(keys_to_evaluate, matched_configs):
+def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
     if not keys_to_evaluate:
+        print("[DEBUG] resolve_and_execute: keys_to_evaluate est vide.")
         return
     
     sorted_tokens = sorted(list(keys_to_evaluate))
     combo_str = "+".join(sorted_tokens)
+    
     win_class = get_active_window_class()
     
-    if VERBOSE:
-        print(f"[DEBUG] Combo finale évaluée: '{combo_str}' | Fenêtre active: '{win_class}'")
+    print(f"[DEBUG-TRACE] === DÉBUT RÉSOLUTION ===")
+    print(f"[DEBUG-TRACE] Combo finale cherchée: '{combo_str}'")
+    print(f"[DEBUG-TRACE] Fenêtre active détectée: '{win_class}'")
+    print(f"[DEBUG-TRACE] Nombre de configs correspondantes: {len(matched_configs)}")
 
     # 1. Priorité aux règles spécifiques des applications actives
-    for cfg in matched_configs:
+    for idx, cfg in enumerate(matched_configs):
+        print(f"[DEBUG-TRACE] --- Config #{idx} ({cfg['file']}) --- Applications enregistrées: {list(cfg['apps'].keys())}")
         for app_name, rules in cfg["apps"].items():
+            print(f"[DEBUG-TRACE] Test correspondance app: '{app_name}' dans '{win_class}' ?")
             if app_name.lower() in win_class.lower():
+                print(f"[DEBUG-TRACE] -> Application trouvée ! Règles dispo pour cette app: {list(rules.keys())}")
                 if combo_str in rules:
+                    print(f"[DEBUG-TRACE] -> Trouvé dans les règles de l'app (combo exacte) !")
                     execute_command(rules[combo_str], combo_str)
                     return
                 if len(sorted_tokens) == 1 and sorted_tokens[0] in rules:
+                    print(f"[DEBUG-TRACE] -> Trouvé dans les règles de l'app (token unique) !")
                     execute_command(rules[sorted_tokens[0]], sorted_tokens[0])
                     return
+                print(f"[DEBUG-TRACE] -> Clé non trouvée dans les règles de cette application.")
 
     # 2. Repli sur les règles globales
-    for cfg in matched_configs:
+    print(f"[DEBUG-TRACE] Passage aux règles globales...")
+    for idx, cfg in enumerate(matched_configs):
+        print(f"[DEBUG-TRACE] --- Globaux Config #{idx} ({cfg['file']}) --- Règles dispos: {list(cfg['globals'].keys())}")
         if combo_str in cfg["globals"]:
+            print(f"[DEBUG-TRACE] -> Trouvé dans les globals (combo exacte) !")
             execute_command(cfg["globals"][combo_str], combo_str)
             return
         elif len(sorted_tokens) == 1 and sorted_tokens[0] in cfg["globals"]:
+            print(f"[DEBUG-TRACE] -> Trouvé dans les globals (token unique) !")
             execute_command(cfg["globals"][sorted_tokens[0]], sorted_tokens[0])
             return
-        elif VERBOSE:
-            print(f"[DEBUG] Clé '{combo_str}' non trouvée dans les globals du fichier {cfg['file']}.")
+        else:
+            print(f"[DEBUG-TRACE] -> '{combo_str}' ABSENT des globals de ce fichier.")
+
+    print(f"[DEBUG-TRACE] === FIN RÉSOLUTION : AUCUNE RÈGLE CORRESPONDANTE TROUVÉE ===")
 
 def main():
     global current_combo_snapshot
@@ -178,7 +208,6 @@ def main():
                 if VERBOSE:
                     print(f"[INPUT] -> {key_name} (Enfoncé)")
                 active_keys.add(key_name)
-                # On enrichit le snapshot de la session avec toutes les touches pressées au cours du temps
                 current_combo_snapshot.add(key_name)
 
             elif event.type == pygame.JOYBUTTONUP:
@@ -188,11 +217,10 @@ def main():
                 
                 active_keys.discard(key_name)
                 
-                # Si c'est la dernière touche de la session à être relâchée, on déclenche l'action globale
                 if not active_keys and current_combo_snapshot:
                     joy_name = pygame.joystick.Joystick(event.joy).get_name()
                     matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                    resolve_and_execute(current_combo_snapshot, matched_configs)
+                    resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
                     current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYHATMOTION:
@@ -219,7 +247,7 @@ def main():
                             if not active_keys and current_combo_snapshot:
                                 joy_name = pygame.joystick.Joystick(event.joy).get_name()
                                 matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                                resolve_and_execute(current_combo_snapshot, matched_configs)
+                                resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
                                 current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYAXISMOTION:
@@ -244,7 +272,7 @@ def main():
                         if not active_keys and current_combo_snapshot:
                             joy_name = pygame.joystick.Joystick(event.joy).get_name()
                             matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                            resolve_and_execute(current_combo_snapshot, matched_configs)
+                            resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
                             current_combo_snapshot.clear()
                 
                 if neg_pressed:
@@ -261,7 +289,7 @@ def main():
                         if not active_keys and current_combo_snapshot:
                             joy_name = pygame.joystick.Joystick(event.joy).get_name()
                             matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                            resolve_and_execute(current_combo_snapshot, matched_configs)
+                            resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
                             current_combo_snapshot.clear()
 
         clock.tick(100)

@@ -34,6 +34,7 @@ KEY_VOLUMEDOWN = amixer sset Master 5%-
 
 ```
 
+
 ### Exemple 2 : Manette de jeu (`/etc/triggerexec.d/manette.conf`)
 
 ```ini

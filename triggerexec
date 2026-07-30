@@ -37,7 +37,35 @@ def load_configs_from_dir(dir_path):
                     continue
                 
                 if "=" in line:
-                    key_part, val = map(str.strip, line.split("=", 1))
+                    # On sépare la ligne au niveau du premier signe '=' qui sépare la clé de la commande,
+                    # en s'assurant de gérer les clés contenant déjà un '=' (ex: ABS_HAT0Y=-1 = commande)
+                    # Astuce : le '=' de séparation clé/valeur est celui qui précède la commande (/usr/... ou similaire)
+                    # Ou plus simplement, on sépare par le premier '=' s'il n'y a pas d'autre '=' dans la clé.
+                    
+                    # Découpage intelligent : tout ce qui est avant le premier '=' qui n'est pas dans un token de gauche
+                    # On peut chercher le dernier '=' avant le début de la commande ou séparer par le '=' principal.
+                    # Ici, les commandes commencent toutes par '/' ou un chemin. On peut séparer par le dernier '=' 
+                    # si la clé contient un '=', ou utiliser une regex.
+                    
+                    if "/" in line:
+                        left_part, val = line.split("=", 1)
+                        # S'il y a un autre '=' dans la partie gauche (ex: ABS_HAT0Y=-1), on doit le conserver dans la clé.
+                        # En fait, la structure est : [cle_complexe] = [commande]
+                        # Le '=' de séparation est celui qui est suivi d'un espace ou juste avant la commande.
+                        # Ajustons le split : on cherche le '=' qui sépare la config de la commande.
+                        pass
+                    
+                    # Approche robuste par Regex pour chaque ligne de configuration :
+                    # Capture tout ce qui est à gauche (avec des + et des =) et tout ce qui est à droite (la commande)
+                    match = re.match(r'^([^=]+(?:=[+-]?\d+)?(?:\s*\+\s*[^=]+(?:=[+-]?\d+)?)*)\s*=\s*(.*)$', line)
+                    if not match:
+                        # Fallback sur l'ancien split si la regex ne matche pas
+                        parts = line.split("=", 1)
+                        key_part, val = parts[0].strip(), parts[1].strip()
+                    else:
+                        key_part, val = match.groups()
+                        key_part = key_part.strip()
+                        val = val.strip()
                     
                     if key_part.upper() == "DEVICE" and current_app is None and not global_rules:
                         device_filter = val
@@ -47,8 +75,8 @@ def load_configs_from_dir(dir_path):
                     cleaned_tokens = []
                     for token in raw_tokens:
                         token = token.strip().upper()
-                        # Si le token est un axe, un hat ou un bouton sans opérateur explicite, on ajoute "=1" par défaut
-                        if ("AXIS" in token or "HAT" in token or "BTN" in token) and "=" not in token:
+                        # Si le token ne contient pas déjà d'opérateur (=1 ou =-1), on lui ajoute "=1" par défaut
+                        if "=" not in token:
                             token = f"{token}=1"
                         cleaned_tokens.append(token)
                     
@@ -68,21 +96,33 @@ def load_configs_from_dir(dir_path):
         })
         
     return device_rules
-
+    
 def get_active_window_class():
     """Interroge KWin via kdotool pour obtenir la classe de la fenêtre active."""
     try:
+        # 1. Récupère l'ID de la fenêtre active
+        res_win = subprocess.run(
+            ["kdotool", "getactivewindow"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        win_id = res_win.stdout.strip()
+        if not win_id:
+            return ""
+        
+        # 2. Récupère la classe de cette fenêtre
         result = subprocess.run(
-            ["kdotool", "getwindowclassname", "$(kdotool getactivewindow)"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True
+            ["kdotool", "getwindowclassname", win_id],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         return result.stdout.strip()
     except Exception:
         return ""
 
-def execute_command(cmd):
+def execute_command(cmd, combo_str=""):
     """Exécute la commande shell configurée."""
     if VERBOSE:
+        print(f"[INPUT] -> {combo_str} -> {cmd}")
+    else:
         print(f"[EXEC] {cmd}")
     subprocess.Popen(cmd, shell=True)
 
@@ -94,18 +134,23 @@ def resolve_and_execute(active_keys, matched_configs):
     combo_str = "".join(sorted(list(active_keys)))
     win_class = get_active_window_class()
     
+    if VERBOSE:
+        print(f"[DEBUG] Combo évaluée: '{combo_str}' | Fenêtre active: '{win_class}'")
+
     # 1. Priorité aux règles spécifiques des applications actives
     for cfg in matched_configs:
         for app_name, rules in cfg["apps"].items():
             if app_name.lower() in win_class.lower() and combo_str in rules:
-                execute_command(rules[combo_str])
+                execute_command(rules[combo_str], combo_str)
                 return
 
     # 2. Repli sur les règles globales
     for cfg in matched_configs:
         if combo_str in cfg["globals"]:
-            execute_command(cfg["globals"][combo_str])
+            execute_command(cfg["globals"][combo_str], combo_str)
             return
+        elif VERBOSE:
+            print(f"[DEBUG] Clé '{combo_str}' non trouvée dans les globals du fichier {cfg['file']}. Disponibles: {list(cfg['globals'].keys())}")
 
 def main():
     os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -114,6 +159,12 @@ def main():
 
     configs = load_configs_from_dir(CONFIG_DIR)
     print(f"Chargement de {len(configs)} fichier(s) de configuration depuis {CONFIG_DIR}.")
+    
+    if VERBOSE:
+        print("=== DUMP DES RÈGLES CHARGÉES ===")
+        import pprint
+        pprint.pprint(configs)
+        print("================================")
 
     joysticks = {}
     active_keys = set()

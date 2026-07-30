@@ -93,6 +93,7 @@ def load_configs_from_dir(dir_path):
 def get_active_session_info():
     """Retourne un tuple (uid, username) de l'utilisateur actif sur la session graphique."""
     try:
+        # Liste toutes les sessions existantes
         sessions_out = subprocess.check_output(["loginctl", "list-sessions", "--no-legend"], text=True)
         
         for line in sessions_out.strip().split("\n"):
@@ -100,9 +101,11 @@ def get_active_session_info():
             parts = line.split()
             session_id, uid, user = parts[0], parts[1], parts[2]
             
+            # Récupère les propriétés de cette session
             props_raw = subprocess.check_output(["loginctl", "show-session", session_id], text=True)
             props = dict(p.split("=", 1) for p in props_raw.strip().split("\n") if "=" in p)
             
+            # On cherche LA session active et graphique (wayland ou x11)
             if props.get("State") == "active" and props.get("Type") in ["wayland", "x11"]:
                 return uid, user
                 
@@ -121,6 +124,7 @@ def get_active_window_class():
         return ""
 
     try:
+        # Détection dynamique du socket Wayland
         wayland_displays = glob.glob(f"/run/user/{uid}/wayland-*")
         wayland_socket = "wayland-0"
         if wayland_displays:
@@ -134,6 +138,8 @@ def get_active_window_class():
         if VERBOSE:
             print(f"[DEBUG-KDO] Exécution pour l'utilisateur: {user} | WAYLAND_DISPLAY: {wayland_socket}")
 
+        # Astuce : On utilise la commande 'env' exécutée par sudo pour 
+        # forcer les variables d'environnement malgré le nettoyage de sudo
         base_cmd = [
             "sudo", "-u", user,
             "env",
@@ -143,12 +149,14 @@ def get_active_window_class():
             f"DBUS_SESSION_BUS_ADDRESS={dbus_address}"
         ]
 
+        # Première exécution : récupérer l'ID
         res_win = subprocess.run(
             base_cmd + ["kdotool", "getactivewindow"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         win_id = res_win.stdout.strip()
         
+        # Affichage de l'erreur s'il y en a une
         if VERBOSE and res_win.stderr:
             print(f"[DEBUG-KDO] Erreur kdotool (getactivewindow) : {res_win.stderr.strip()}")
         
@@ -160,6 +168,7 @@ def get_active_window_class():
         if VERBOSE:
             print(f"[DEBUG-KDO] ID de la fenêtre : {win_id}")
             
+        # Deuxième exécution : récupérer la classe (nom de l'app)
         result = subprocess.run(
             base_cmd + ["kdotool", "getwindowclassname", win_id],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -257,18 +266,6 @@ def main():
 
     clock = pygame.time.Clock()
 
-    def handle_release_event(joy_id):
-        """Factorisation de la logique de déclenchement au relâchement complet des entrées."""
-        nonlocal active_keys
-        if not active_keys and current_combo_snapshot:
-            try:
-                joy_name = pygame.joystick.Joystick(joy_id).get_name()
-            except pygame.error:
-                joy_name = ""
-            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-            resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
-            current_combo_snapshot.clear()
-
     while True:
         for event in pygame.event.get():
             if event.type == pygame.JOYDEVICEADDED:
@@ -295,7 +292,12 @@ def main():
                     print(f"[INPUT] -> {key_name} (Relâché)")
                 
                 active_keys.discard(key_name)
-                handle_release_event(event.joy)
+                
+                if not active_keys and current_combo_snapshot:
+                    joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                    matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                    resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
+                    current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYHATMOTION:
                 hat_x, hat_y = event.value
@@ -318,7 +320,11 @@ def main():
                             if VERBOSE:
                                 print(f"[INPUT] -> {hkey} (Relâché)")
                             active_keys.discard(hkey)
-                            handle_release_event(event.joy)
+                            if not active_keys and current_combo_snapshot:
+                                joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                                matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                                resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
+                                current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYAXISMOTION:
                 val = event.value
@@ -339,7 +345,11 @@ def main():
                         if VERBOSE:
                             print(f"[INPUT] -> {axis_pos_key} (Relâché)")
                         active_keys.discard(axis_pos_key)
-                        handle_release_event(event.joy)
+                        if not active_keys and current_combo_snapshot:
+                            joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                            resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
+                            current_combo_snapshot.clear()
                 
                 if neg_pressed:
                     if axis_neg_key not in active_keys:
@@ -352,7 +362,11 @@ def main():
                         if VERBOSE:
                             print(f"[INPUT] -> {axis_neg_key} (Relâché)")
                         active_keys.discard(axis_neg_key)
-                        handle_release_event(event.joy)
+                        if not active_keys and current_combo_snapshot:
+                            joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                            resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
+                            current_combo_snapshot.clear()
 
         clock.tick(100)
 

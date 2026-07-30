@@ -9,10 +9,12 @@ import pygame
 
 CONFIG_DIR = "/etc/triggerexec.d"
 VERBOSE = "-v" in sys.argv or "--verbose" in sys.argv
-ANALOG_THRESHOLD = 0.7  # Seuil de déclenchement pour les sticks et gâchettes
+ANALOG_THRESHOLD = 0.7
+
+# Mémorise la liste exacte des boutons qui ont été enfoncés ensemble lors de la session
+current_combo_snapshot = set()
 
 def load_configs_from_dir(dir_path):
-    """Charge et parse tous les fichiers de configuration du dossier triggerexec.d."""
     device_rules = []
     if not os.path.exists(dir_path):
         os.makedirs(dir_path, exist_ok=True)
@@ -37,29 +39,8 @@ def load_configs_from_dir(dir_path):
                     continue
                 
                 if "=" in line:
-                    # On sépare la ligne au niveau du premier signe '=' qui sépare la clé de la commande,
-                    # en s'assurant de gérer les clés contenant déjà un '=' (ex: ABS_HAT0Y=-1 = commande)
-                    # Astuce : le '=' de séparation clé/valeur est celui qui précède la commande (/usr/... ou similaire)
-                    # Ou plus simplement, on sépare par le premier '=' s'il n'y a pas d'autre '=' dans la clé.
-                    
-                    # Découpage intelligent : tout ce qui est avant le premier '=' qui n'est pas dans un token de gauche
-                    # On peut chercher le dernier '=' avant le début de la commande ou séparer par le '=' principal.
-                    # Ici, les commandes commencent toutes par '/' ou un chemin. On peut séparer par le dernier '=' 
-                    # si la clé contient un '=', ou utiliser une regex.
-                    
-                    if "/" in line:
-                        left_part, val = line.split("=", 1)
-                        # S'il y a un autre '=' dans la partie gauche (ex: ABS_HAT0Y=-1), on doit le conserver dans la clé.
-                        # En fait, la structure est : [cle_complexe] = [commande]
-                        # Le '=' de séparation est celui qui est suivi d'un espace ou juste avant la commande.
-                        # Ajustons le split : on cherche le '=' qui sépare la config de la commande.
-                        pass
-                    
-                    # Approche robuste par Regex pour chaque ligne de configuration :
-                    # Capture tout ce qui est à gauche (avec des + et des =) et tout ce qui est à droite (la commande)
                     match = re.match(r'^([^=]+(?:=[+-]?\d+)?(?:\s*\+\s*[^=]+(?:=[+-]?\d+)?)*)\s*=\s*(.*)$', line)
                     if not match:
-                        # Fallback sur l'ancien split si la regex ne matche pas
                         parts = line.split("=", 1)
                         key_part, val = parts[0].strip(), parts[1].strip()
                     else:
@@ -67,7 +48,7 @@ def load_configs_from_dir(dir_path):
                         key_part = key_part.strip()
                         val = val.strip()
                     
-                    if key_part.upper() == "DEVICE" and current_app is None and not global_rules:
+                    if key_part.upper() == "DEVICE" and current_app is None:
                         device_filter = val
                         continue
                     
@@ -75,13 +56,11 @@ def load_configs_from_dir(dir_path):
                     cleaned_tokens = []
                     for token in raw_tokens:
                         token = token.strip().upper()
-                        # Si le token ne contient pas déjà d'opérateur (=1 ou =-1), on lui ajoute "=1" par défaut
                         if "=" not in token:
                             token = f"{token}=1"
                         cleaned_tokens.append(token)
                     
-                    # Tri alphabétique pour garantir l'invariabilité de l'ordre des combinaisons
-                    combo = "".join(sorted(cleaned_tokens))
+                    combo = "+".join(sorted(cleaned_tokens))
                     
                     if current_app is None:
                         global_rules[combo] = val
@@ -98,9 +77,7 @@ def load_configs_from_dir(dir_path):
     return device_rules
     
 def get_active_window_class():
-    """Interroge KWin via kdotool pour obtenir la classe de la fenêtre active."""
     try:
-        # 1. Récupère l'ID de la fenêtre active
         res_win = subprocess.run(
             ["kdotool", "getactivewindow"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -109,7 +86,6 @@ def get_active_window_class():
         if not win_id:
             return ""
         
-        # 2. Récupère la classe de cette fenêtre
         result = subprocess.run(
             ["kdotool", "getwindowclassname", win_id],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -119,40 +95,47 @@ def get_active_window_class():
         return ""
 
 def execute_command(cmd, combo_str=""):
-    """Exécute la commande shell configurée."""
     if VERBOSE:
         print(f"[INPUT] -> {combo_str} -> {cmd}")
     else:
         print(f"[EXEC] {cmd}")
     subprocess.Popen(cmd, shell=True)
 
-def resolve_and_execute(active_keys, matched_configs):
-    """Résout la combinaison active en fonction de la fenêtre courante et exécute l'action."""
-    if not active_keys:
+def resolve_and_execute(keys_to_evaluate, matched_configs):
+    if not keys_to_evaluate:
         return
     
-    combo_str = "".join(sorted(list(active_keys)))
+    sorted_tokens = sorted(list(keys_to_evaluate))
+    combo_str = "+".join(sorted_tokens)
     win_class = get_active_window_class()
     
     if VERBOSE:
-        print(f"[DEBUG] Combo évaluée: '{combo_str}' | Fenêtre active: '{win_class}'")
+        print(f"[DEBUG] Combo finale évaluée: '{combo_str}' | Fenêtre active: '{win_class}'")
 
     # 1. Priorité aux règles spécifiques des applications actives
     for cfg in matched_configs:
         for app_name, rules in cfg["apps"].items():
-            if app_name.lower() in win_class.lower() and combo_str in rules:
-                execute_command(rules[combo_str], combo_str)
-                return
+            if app_name.lower() in win_class.lower():
+                if combo_str in rules:
+                    execute_command(rules[combo_str], combo_str)
+                    return
+                if len(sorted_tokens) == 1 and sorted_tokens[0] in rules:
+                    execute_command(rules[sorted_tokens[0]], sorted_tokens[0])
+                    return
 
     # 2. Repli sur les règles globales
     for cfg in matched_configs:
         if combo_str in cfg["globals"]:
             execute_command(cfg["globals"][combo_str], combo_str)
             return
+        elif len(sorted_tokens) == 1 and sorted_tokens[0] in cfg["globals"]:
+            execute_command(cfg["globals"][sorted_tokens[0]], sorted_tokens[0])
+            return
         elif VERBOSE:
-            print(f"[DEBUG] Clé '{combo_str}' non trouvée dans les globals du fichier {cfg['file']}. Disponibles: {list(cfg['globals'].keys())}")
+            print(f"[DEBUG] Clé '{combo_str}' non trouvée dans les globals du fichier {cfg['file']}.")
 
 def main():
+    global current_combo_snapshot
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     pygame.joystick.init()
@@ -193,18 +176,24 @@ def main():
             elif event.type == pygame.JOYBUTTONDOWN:
                 key_name = f"BTN_{event.button}=1"
                 if VERBOSE:
-                    print(f"[INPUT] -> {key_name}")
+                    print(f"[INPUT] -> {key_name} (Enfoncé)")
                 active_keys.add(key_name)
-                
-                joy_name = pygame.joystick.Joystick(event.joy).get_name()
-                matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                resolve_and_execute(active_keys, matched_configs)
+                # On enrichit le snapshot de la session avec toutes les touches pressées au cours du temps
+                current_combo_snapshot.add(key_name)
 
             elif event.type == pygame.JOYBUTTONUP:
                 key_name = f"BTN_{event.button}=1"
                 if VERBOSE:
                     print(f"[INPUT] -> {key_name} (Relâché)")
+                
                 active_keys.discard(key_name)
+                
+                # Si c'est la dernière touche de la session à être relâchée, on déclenche l'action globale
+                if not active_keys and current_combo_snapshot:
+                    joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                    matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                    resolve_and_execute(current_combo_snapshot, matched_configs)
+                    current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYHATMOTION:
                 hat_x, hat_y = event.value
@@ -219,13 +208,19 @@ def main():
                     if pressed:
                         if hkey not in active_keys:
                             active_keys.add(hkey)
+                            current_combo_snapshot.add(hkey)
                             if VERBOSE:
-                                print(f"[INPUT] -> {hkey}")
-                            joy_name = pygame.joystick.Joystick(event.joy).get_name()
-                            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                            resolve_and_execute(active_keys, matched_configs)
+                                print(f"[INPUT] -> {hkey} (Enfoncé)")
                     else:
-                        active_keys.discard(hkey)
+                        if hkey in active_keys:
+                            if VERBOSE:
+                                print(f"[INPUT] -> {hkey} (Relâché)")
+                            active_keys.discard(hkey)
+                            if not active_keys and current_combo_snapshot:
+                                joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                                matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                                resolve_and_execute(current_combo_snapshot, matched_configs)
+                                current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYAXISMOTION:
                 val = event.value
@@ -238,24 +233,36 @@ def main():
                 if pos_pressed:
                     if axis_pos_key not in active_keys:
                         active_keys.add(axis_pos_key)
+                        current_combo_snapshot.add(axis_pos_key)
                         if VERBOSE:
-                            print(f"[INPUT] -> {axis_pos_key} (val: {val:.2f})")
-                        joy_name = pygame.joystick.Joystick(event.joy).get_name()
-                        matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                        resolve_and_execute(active_keys, matched_configs)
+                            print(f"[INPUT] -> {axis_pos_key} (Enfoncé, val: {val:.2f})")
                 else:
-                    active_keys.discard(axis_pos_key)
+                    if axis_pos_key in active_keys:
+                        if VERBOSE:
+                            print(f"[INPUT] -> {axis_pos_key} (Relâché)")
+                        active_keys.discard(axis_pos_key)
+                        if not active_keys and current_combo_snapshot:
+                            joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                            resolve_and_execute(current_combo_snapshot, matched_configs)
+                            current_combo_snapshot.clear()
                 
                 if neg_pressed:
                     if axis_neg_key not in active_keys:
                         active_keys.add(axis_neg_key)
+                        current_combo_snapshot.add(axis_neg_key)
                         if VERBOSE:
-                            print(f"[INPUT] -> {axis_neg_key} (val: {val:.2f})")
-                        joy_name = pygame.joystick.Joystick(event.joy).get_name()
-                        matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-                        resolve_and_execute(active_keys, matched_configs)
+                            print(f"[INPUT] -> {axis_neg_key} (Enfoncé, val: {val:.2f})")
                 else:
-                    active_keys.discard(axis_neg_key)
+                    if axis_neg_key in active_keys:
+                        if VERBOSE:
+                            print(f"[INPUT] -> {axis_neg_key} (Relâché)")
+                        active_keys.discard(axis_neg_key)
+                        if not active_keys and current_combo_snapshot:
+                            joy_name = pygame.joystick.Joystick(event.joy).get_name()
+                            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
+                            resolve_and_execute(current_combo_snapshot, matched_configs)
+                            current_combo_snapshot.clear()
 
         clock.tick(100)
 

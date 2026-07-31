@@ -20,13 +20,23 @@ JOYSTICK_MAPPINGS = {
         "BTN_Y": "BTN_3=1",
         "BTN_TL": "BTN_4=1",
         "BTN_TR": "BTN_5=1",
+        "BTN_TL_A": "AXIS_2=1",
+        "BTN_TR_A": "AXIS_5=1",
         "BTN_SELECT": "BTN_6=1",
         "BTN_START": "BTN_7=1",
         "BTN_MODE": "BTN_8=1",
         "UP": "ABS_HAT0Y=1",
         "DOWN": "ABS_HAT0Y=-1",
         "LEFT": "ABS_HAT0X=-1",
-        "RIGHT": "ABS_HAT0X=1"
+        "RIGHT": "ABS_HAT0X=1",
+        "SL_UP": "AXIS_1=-1",
+        "SL_DOWN": "AXIS_1=1",
+        "SL_LEFT": "AXIS_0=-1",
+        "SL_RIGHT": "AXIS_0=1",
+        "SR_UP": "AXIS_4=-1",
+        "SR_DOWN": "AXIS_4=1",
+        "SR_LEFT": "AXIS_3=-1",
+        "SR_RIGHT": "AXIS_3=1"
     },
 }
 

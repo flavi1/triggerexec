@@ -22,6 +22,10 @@ JOYSTICK_MAPPINGS = {
         "BTN_SELECT": "BTN_6=1",
         "BTN_START": "BTN_7=1",
         "BTN_MODE": "BTN_8=1",
+		"DOWN": "ABS_HAT0Y=-1",
+        "UP": "ABS_HAT0Y=1",
+        "LEFT": "ABS_HAT0X=-1",
+        "RIGHT": "ABS_HAT0X=1"
     },
 }
 

@@ -155,9 +155,6 @@ def get_active_window_class():
         dbus_address = f"unix:path=/run/user/{uid}/bus"
         xdg_runtime_dir = f"/run/user/{uid}"
 
-        if VERBOSE:
-            print(f"[DEBUG-KDO] Exécution pour l'utilisateur: {user} | WAYLAND_DISPLAY: {wayland_socket}")
-
         base_cmd = [
             "sudo", "-u", user,
             "env",
@@ -173,25 +170,14 @@ def get_active_window_class():
         )
         win_id = res_win.stdout.strip()
         
-        if VERBOSE and res_win.stderr:
-            print(f"[DEBUG-KDO] Erreur kdotool (getactivewindow) : {res_win.stderr.strip()}")
-        
         if not win_id:
-            if VERBOSE:
-                print("[DEBUG-KDO] Aucun ID de fenêtre retourné.")
             return ""
-            
-        if VERBOSE:
-            print(f"[DEBUG-KDO] ID de la fenêtre : {win_id}")
             
         result = subprocess.run(
             base_cmd + ["kdotool", "getwindowclassname", win_id],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         
-        if VERBOSE and result.stderr:
-            print(f"[DEBUG-KDO] Erreur kdotool (getwindowclassname) : {result.stderr.strip()}")
-            
         return result.stdout.strip()
         
     except Exception as e:
@@ -206,75 +192,51 @@ def execute_command(cmd, combo_str=""):
         print(f"[EXEC] {cmd}")
     subprocess.Popen(cmd, shell=True)
 
-def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
+def evaluate_and_execute(keys_to_evaluate, matched_configs):
     if not keys_to_evaluate:
-        if VERBOSE:
-            print("[DEBUG] resolve_and_execute: keys_to_evaluate est vide.")
         return
     
     sorted_tokens = sorted(list(keys_to_evaluate))
     combo_str = "+".join(sorted_tokens)
-    
     win_class = get_active_window_class()
     
     if VERBOSE:
-        print(f"[DEBUG-TRACE] === DÉBUT RÉSOLUTION ===")
-        print(f"[DEBUG-TRACE] Combo finale cherchée: '{combo_str}'")
-        print(f"[DEBUG-TRACE] Fenêtre active détectée: '{win_class}'")
-        print(f"[DEBUG-TRACE] Nombre de configs correspondantes: {len(matched_configs)}")
+        print(f"[DEBUG-TRACE] Recherche de la règle pour: '{combo_str}' (Fenêtre: '{win_class}')")
 
-    for idx, cfg in enumerate(matched_configs):
-        if VERBOSE:
-            print(f"[DEBUG-TRACE] --- Config #{idx} ({cfg['file']}) [Test Apps] ---")
+    # 1. Test des applications spécifiques
+    for cfg in matched_configs:
         for app_name, rules in cfg["apps"].items():
             if app_name.lower() in win_class.lower():
-                if VERBOSE:
-                    print(f"[DEBUG-TRACE] -> Application correspondante trouvée: '{app_name}'")
                 if combo_str in rules:
-                    if VERBOSE:
-                        print(f"[DEBUG-TRACE] -> Trouvé dans les règles spécifiques de l'app (combo exacte) !")
                     execute_command(rules[combo_str], combo_str)
                     return
                 if len(sorted_tokens) == 1 and sorted_tokens[0] in rules:
-                    if VERBOSE:
-                        print(f"[DEBUG-TRACE] -> Trouvé dans les règles spécifiques de l'app (token unique) !")
                     execute_command(rules[sorted_tokens[0]], sorted_tokens[0])
                     return
 
+    # 2. Vérification de la blacklist pour les règles globales
     for cfg in matched_configs:
         if cfg.get("blacklist"):
             blacklisted_patterns = cfg["blacklist"].split()
             for pattern in blacklisted_patterns:
                 if re.search(pattern, win_class, re.IGNORECASE):
                     if VERBOSE:
-                        print(f"[DEBUG-TRACE] -> Fenêtre '{win_class}' blackant les règles globales (correspond à '{pattern}' dans {cfg['file']}).")
-                        print(f"[DEBUG-TRACE] === FIN RÉSOLUTION (Règles globales ignorées par blacklist) ===")
+                        print(f"[DEBUG-TRACE] Fenêtre '{win_class}' blackant les règles globales.")
                     return
 
-    if VERBOSE:
-        print(f"[DEBUG-TRACE] Passage aux règles globales...")
-    for idx, cfg in enumerate(matched_configs):
-        if VERBOSE:
-            print(f"[DEBUG-TRACE] --- Globaux Config #{idx} ({cfg['file']}) ---")
+    # 3. Test des règles globales
+    for cfg in matched_configs:
         if combo_str in cfg["globals"]:
-            if VERBOSE:
-                print(f"[DEBUG-TRACE] -> Trouvé dans les globals (combo exacte) !")
             execute_command(cfg["globals"][combo_str], combo_str)
             return
         elif len(sorted_tokens) == 1 and sorted_tokens[0] in cfg["globals"]:
-            if VERBOSE:
-                print(f"[DEBUG-TRACE] -> Trouvé dans les globals (token unique) !")
             execute_command(cfg["globals"][sorted_tokens[0]], sorted_tokens[0])
             return
 
-    if VERBOSE:
-        print(f"[DEBUG-TRACE] === FIN RÉSOLUTION : AUCUNE RÈGLE CORRESPONDANTE TROUVÉE ===")
-
 def main():
-	# 2. Enregistrer les gestionnaires de signaux
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-	
+    
     global current_combo_snapshot
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
@@ -283,14 +245,11 @@ def main():
     configs = load_configs_from_dir(CONFIG_DIR)
     print(f"Chargement de {len(configs)} fichier(s) de configuration depuis {CONFIG_DIR}.")
     
-    if VERBOSE:
-        print("=== DUMP DES RÈGLES CHARGÉES ===")
-        import pprint
-        pprint.pprint(configs)
-        print("================================")
-
     joysticks = {}
     active_keys = set()
+    
+    # Suivi spécifique pour éviter les répétitions en continu sur les gâchettes maintenues
+    trigger_states = {}
 
     for i in range(pygame.joystick.get_count()):
         joy = pygame.joystick.Joystick(i)
@@ -300,16 +259,12 @@ def main():
 
     clock = pygame.time.Clock()
 
-    def handle_release_event(joy_id):
-        nonlocal active_keys
-        if not active_keys and current_combo_snapshot:
-            try:
-                joy_name = pygame.joystick.Joystick(joy_id).get_name()
-            except pygame.error:
-                joy_name = ""
-            matched_configs = [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
-            resolve_and_execute(current_combo_snapshot, matched_configs, joy_name)
-            current_combo_snapshot.clear()
+    def get_matched_configs(joy_id):
+        try:
+            joy_name = pygame.joystick.Joystick(joy_id).get_name()
+        except pygame.error:
+            joy_name = ""
+        return [cfg for cfg in configs if cfg["filter"] is None or re.search(cfg["filter"], joy_name, re.IGNORECASE)]
 
     while True:
         for event in pygame.event.get():
@@ -337,7 +292,10 @@ def main():
                     print(f"[INPUT] -> {key_name} (Relâché)")
                 
                 active_keys.discard(key_name)
-                handle_release_event(event.joy)
+                if not active_keys and current_combo_snapshot:
+                    matched = get_matched_configs(event.joy)
+                    evaluate_and_execute(current_combo_snapshot, matched)
+                    current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYHATMOTION:
                 hat_x, hat_y = event.value
@@ -360,37 +318,65 @@ def main():
                             if VERBOSE:
                                 print(f"[INPUT] -> {hkey} (Relâché)")
                             active_keys.discard(hkey)
-                            handle_release_event(event.joy)
+                            if not active_keys and current_combo_snapshot:
+                                matched = get_matched_configs(event.joy)
+                                evaluate_and_execute(current_combo_snapshot, matched)
+                                current_combo_snapshot.clear()
 
             elif event.type == pygame.JOYAXISMOTION:
                 val = event.value
                 axis_pos_key = f"AXIS_{event.axis}=1"
                 axis_neg_key = f"AXIS_{event.axis}=-1"
                 
+                is_trigger_axis = event.axis in [2, 5]
+
                 pos_pressed = val > ANALOG_THRESHOLD
                 neg_pressed = val < -ANALOG_THRESHOLD
-                
-                if pos_pressed:
-                    if axis_pos_key not in active_keys:
-                        active_keys.add(axis_pos_key)
-                        if VERBOSE:
-                            print(f"[INPUT] -> {axis_pos_key} (Enfoncé, val: {val:.2f})")
+
+                if is_trigger_axis:
+                    # --- GESTION DES GÂCHETTES (Indépendantes, pas de blocage de combo) ---
+                    t_key_pos = (event.joy, axis_pos_key)
+                    if pos_pressed:
+                        if not trigger_states.get(t_key_pos, False):
+                            trigger_states[t_key_pos] = True
+                            if VERBOSE:
+                                print(f"[INPUT] -> {axis_pos_key} (Gâchette Enfoncée, val: {val:.2f})")
+                            matched = get_matched_configs(event.joy)
+                            evaluate_and_execute({axis_pos_key}, matched)
+                    else:
+                        if trigger_states.get(t_key_pos, False):
+                            trigger_states[t_key_pos] = False
+                            if VERBOSE:
+                                print(f"[INPUT] -> {axis_pos_key} (Gâchette Relâchée)")
                 else:
-                    if axis_pos_key in active_keys:
-                        if VERBOSE:
-                            print(f"[INPUT] -> {axis_pos_key} (Relâché)")
-                        active_keys.discard(axis_pos_key)
-                
-                if neg_pressed:
-                    if axis_neg_key not in active_keys:
-                        active_keys.add(axis_neg_key)
-                        if VERBOSE:
-                            print(f"[INPUT] -> {axis_neg_key} (Enfoncé, val: {val:.2f})")
-                else:
-                    if axis_neg_key in active_keys:
-                        if VERBOSE:
-                            print(f"[INPUT] -> {axis_neg_key} (Relâché)")
-                        active_keys.discard(axis_neg_key)
+                    # --- GESTION DES STICKS ANALOGIQUES (Au relâchement / retour au centre) ---
+                    # AXIS POSITIF
+                    if pos_pressed:
+                        if axis_pos_key not in active_keys:
+                            active_keys.add(axis_pos_key)
+                            if VERBOSE:
+                                print(f"[INPUT] -> {axis_pos_key} (Enfoncé, val: {val:.2f})")
+                    else:
+                        if axis_pos_key in active_keys:
+                            if VERBOSE:
+                                print(f"[INPUT] -> {axis_pos_key} (Relâché)")
+                            active_keys.discard(axis_pos_key)
+                            matched = get_matched_configs(event.joy)
+                            evaluate_and_execute({axis_pos_key}, matched)
+
+                    # AXIS NÉGATIF
+                    if neg_pressed:
+                        if axis_neg_key not in active_keys:
+                            active_keys.add(axis_neg_key)
+                            if VERBOSE:
+                                print(f"[INPUT] -> {axis_neg_key} (Enfoncé, val: {val:.2f})")
+                    else:
+                        if axis_neg_key in active_keys:
+                            if VERBOSE:
+                                print(f"[INPUT] -> {axis_neg_key} (Relâché)")
+                            active_keys.discard(axis_neg_key)
+                            matched = get_matched_configs(event.joy)
+                            evaluate_and_execute({axis_neg_key}, matched)
 
         clock.tick(100)
 

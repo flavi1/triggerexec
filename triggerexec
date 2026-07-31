@@ -5,6 +5,7 @@ import os
 import glob
 import re
 import subprocess
+import signal
 import pygame
 
 CONFIG_DIR = "/etc/triggerexec.d"
@@ -30,6 +31,12 @@ JOYSTICK_MAPPINGS = {
 }
 
 current_combo_snapshot = set()
+
+def signal_handler(signum, frame):
+    """Intercepte SIGTERM (systemctl stop) ou SIGINT (Ctrl+C) pour quitter proprement"""
+    print("\nArrêt de triggerexec demandé.")
+    pygame.quit()
+    sys.exit(0)
 
 def load_configs_from_dir(dir_path):
     device_rules = []
@@ -254,6 +261,10 @@ def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
         print(f"[DEBUG-TRACE] === FIN RÉSOLUTION : AUCUNE RÈGLE CORRESPONDANTE TROUVÉE ===")
 
 def main():
+	# 2. Enregistrer les gestionnaires de signaux
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+	
     global current_combo_snapshot
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()

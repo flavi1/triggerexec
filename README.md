@@ -1,6 +1,7 @@
 # triggerexec
 
-`triggerexec` est un démon léger en Python conçu pour intercepter les événements des périphériques d'entrée (`/dev/input/event*`), gérer les combinaisons de touches de manière intelligente (normalisation alphabétique), transformer les sticks et gâchettes analogiques en boutons, et exécuter des commandes shell en fonction de la classe de la fenêtre active sous X11/Wayland (via `kdotool`).
+`triggerexec` est un démon léger en Python conçu pour intercepter les événements des périphériques d'entrée via SDL, gérer les touches combinaisons de touches pour exécuter des commandes shell en fonction de la classe de la fenêtre active sous X11/Wayland (via `kdotool`).
+Il s'inspire de irexec.
 
 ## Prérequis
 

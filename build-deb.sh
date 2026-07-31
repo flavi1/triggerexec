@@ -18,8 +18,9 @@ mkdir -p "$BUILD_DIR/DEBIAN"
 mkdir -p "$BUILD_DIR/usr/local/bin"
 mkdir -p "$BUILD_DIR/etc/triggerexec.d"
 mkdir -p "$BUILD_DIR/etc/systemd/system"
+mkdir -p "$BUILD_DIR/etc/udev/rules.d"
 
-# 2. Copie des fichiers sources et du service systemd
+# 2. Copie des fichiers sources, du service systemd et de la règle udev
 cp -av triggerexec "$BUILD_DIR/usr/local/bin/"
 chmod +x "$BUILD_DIR/usr/local/bin/triggerexec"
 
@@ -42,7 +43,11 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 EOF
 
-# 3. Génération dynamique du fichier control (ajout de python3-evdev dans les dépendances si besoin)
+cat << 'EOF' > "$BUILD_DIR/etc/udev/rules.d/99-triggerexec.rules"
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", RUN+="/usr/bin/systemctl restart triggerexec"
+EOF
+
+# 3. Génération dynamique du fichier control
 cat << EOF > "$BUILD_DIR/DEBIAN/control"
 Package: triggerexec
 Version: $VERSION
@@ -56,7 +61,7 @@ Description: Démon d'interception de manettes via SDL avec gestion par fenêtre
  et exécute des commandes shell selon la classe de la fenêtre active.
 EOF
 
-# 4. Script postinst (activation et démarrage du service systemd)
+# 4. Script postinst (activation systemd et rechargement udev)
 cat << 'EOF' > "$BUILD_DIR/DEBIAN/postinst"
 #!/bin/sh
 set -e
@@ -67,6 +72,12 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     systemctl enable triggerexec.service
     systemctl restart triggerexec.service
+fi
+
+# Rechargement des règles udev pour prendre en compte la nouvelle règle
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger --subsystem-match=input || true
 fi
 
 echo "triggerexec installé et service activé avec succès."
@@ -86,13 +97,17 @@ exit 0
 EOF
 chmod +x "$BUILD_DIR/DEBIAN/prerm"
 
-# 6. Script postrm (nettoyage systemd lors de la suppression définitive du paquet)
+# 6. Script postrm (nettoyage systemd et rechargement udev lors de la suppression/purge)
 cat << 'EOF' > "$BUILD_DIR/DEBIAN/postrm"
 #!/bin/sh
 set -e
 if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=input || true
     fi
 fi
 exit 0

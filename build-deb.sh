@@ -39,7 +39,7 @@ RestartSec=3
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
-WantedBy=multi-graphical.target
+WantedBy=multi-user.target
 EOF
 
 # 3. Génération dynamique du fichier control (ajout de python3-evdev dans les dépendances si besoin)

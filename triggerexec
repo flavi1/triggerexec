@@ -22,8 +22,8 @@ JOYSTICK_MAPPINGS = {
         "BTN_SELECT": "BTN_6=1",
         "BTN_START": "BTN_7=1",
         "BTN_MODE": "BTN_8=1",
-		"DOWN": "ABS_HAT0Y=-1",
         "UP": "ABS_HAT0Y=1",
+        "DOWN": "ABS_HAT0Y=-1",
         "LEFT": "ABS_HAT0X=-1",
         "RIGHT": "ABS_HAT0X=1"
     },
@@ -206,7 +206,6 @@ def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
         print(f"[DEBUG-TRACE] Fenêtre active détectée: '{win_class}'")
         print(f"[DEBUG-TRACE] Nombre de configs correspondantes: {len(matched_configs)}")
 
-    # 1. Priorité absolue aux règles spécifiques des applications actives (même en cas de blacklist globale)
     for idx, cfg in enumerate(matched_configs):
         if VERBOSE:
             print(f"[DEBUG-TRACE] --- Config #{idx} ({cfg['file']}) [Test Apps] ---")
@@ -225,7 +224,6 @@ def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
                     execute_command(rules[sorted_tokens[0]], sorted_tokens[0])
                     return
 
-    # 2. Vérification de la blacklist globale pour bloquer uniquement les règles globales
     for cfg in matched_configs:
         if cfg.get("blacklist"):
             blacklisted_patterns = cfg["blacklist"].split()
@@ -236,7 +234,6 @@ def resolve_and_execute(keys_to_evaluate, matched_configs, joy_name=""):
                         print(f"[DEBUG-TRACE] === FIN RÉSOLUTION (Règles globales ignorées par blacklist) ===")
                     return
 
-    # 3. Repli sur les règles globales si non blacklisté
     if VERBOSE:
         print(f"[DEBUG-TRACE] Passage aux règles globales...")
     for idx, cfg in enumerate(matched_configs):

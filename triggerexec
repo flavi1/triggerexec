@@ -154,14 +154,16 @@ def get_active_window_class():
         
         dbus_address = f"unix:path=/run/user/{uid}/bus"
         xdg_runtime_dir = f"/run/user/{uid}"
-
+        
         base_cmd = [
             "sudo", "-u", user,
             "env",
             f"XDG_RUNTIME_DIR={xdg_runtime_dir}",
             f"DISPLAY=:0",
             f"WAYLAND_DISPLAY={wayland_socket}",
-            f"DBUS_SESSION_BUS_ADDRESS={dbus_address}"
+            f"DBUS_SESSION_BUS_ADDRESS={dbus_address}",
+            "KDE_SESSION_VERSION=6",
+            "XDG_CURRENT_DESKTOP=KDE",
         ]
 
         res_win = subprocess.run(
